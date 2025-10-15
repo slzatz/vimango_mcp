@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from pathlib import Path
 from typing import Any
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
@@ -141,12 +142,13 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
         )]
 
 
-async def main():
-    """Run the MCP server."""
+async def async_main():
+    """Run the MCP server (async)."""
     global db
 
-    # Load configuration
-    config = load_config()
+    # Load configuration from project root
+    config_path = Path(__file__).parent.parent.parent / "config.json"
+    config = load_config(str(config_path))
     main_db_path = config["vimango"]["main_db"]
     fts_db_path = config["vimango"]["fts_db"]
 
@@ -162,5 +164,10 @@ async def main():
         db.close()
 
 
+def main():
+    """Entry point for the MCP server."""
+    asyncio.run(async_main())
+
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
