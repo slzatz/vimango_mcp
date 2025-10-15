@@ -16,7 +16,7 @@ Vimango uses two separate SQLite databases:
 
 ### Note Creation Workflow
 
-1. MCP server creates new entry in `task` table with `tid = -1` (sentinel for "needs sync")
+1. MCP server creates new entry in `task` table without setting `tid` (left NULL until sync assigns it)
 2. Entry includes: title, note body, folder_tid, context_tid, timestamps
 3. **FTS database is NOT touched** - it will be updated during sync
 4. When you sync vimango with the remote server:
@@ -114,7 +114,7 @@ uv run pytest
 
 ## Notes
 
-- The MCP server creates notes with `tid = -1` to indicate they need server-assigned IDs
+- The MCP server creates notes with `tid` left NULL so the server can assign IDs during sync
 - FTS synchronization happens automatically during vimango's normal sync process
 - Concurrent access is handled by SQLite's locking mechanisms
 - Research notes are typically created in the "research" folder

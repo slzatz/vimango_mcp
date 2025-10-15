@@ -23,7 +23,8 @@ class VimangoDatabase:
 
     def connect(self):
         """Establish database connections."""
-        self.main_db = sqlite3.connect(self.main_db_path)
+        # Use a short busy timeout so we wait briefly for vimango's writes before failing
+        self.main_db = sqlite3.connect(self.main_db_path, timeout=2.0)
         # Enable foreign keys
         self.main_db.execute("PRAGMA foreign_keys=ON")
 
@@ -54,17 +55,22 @@ class VimangoDatabase:
             The ID of the newly created task
 
         Note:
-            - Creates entry with tid = -1 (sentinel for "needs sync")
+            - Leaves tid NULL so sync can assign the real server tid later
             - FTS database is NOT updated (happens during sync)
         """
-        cursor = self.main_db.execute(
-            """INSERT INTO task (tid, title, note, folder_tid, context_tid, star, added, modified)
-               VALUES (-1, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))""",
-            (title, note, folder_tid, context_tid, star)
-        )
-        task_id = cursor.lastrowid
-        self.main_db.commit()
-        return task_id
+        try:
+            cursor = self.main_db.execute(
+                """INSERT INTO task (title, note, folder_tid, context_tid, star, added, modified)
+                   VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))""",
+                (title, note, folder_tid, context_tid, star)
+            )
+            task_id = cursor.lastrowid
+            self.main_db.commit()
+            return task_id
+        except sqlite3.DatabaseError:
+            # Ensure we release SQLite's write lock if the insert fails
+            self.main_db.rollback()
+            raise
 
     def list_contexts(self) -> list[Tuple[int, int, str, bool]]:
         """
