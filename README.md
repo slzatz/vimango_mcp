@@ -76,9 +76,7 @@ Add to your Claude Desktop MCP settings:
 {
   "mcpServers": {
     "vimango": {
-      "command": "uv",
-      "args": ["run", "vimango-mcp"],
-      "cwd": "/home/slzatz/vimango_mcp"
+      "command": "/home/slzatz/vimango_mcp/.venv/bin/vimango-mcp"
     }
   }
 }
