@@ -53,15 +53,16 @@ This approach keeps the MCP server simple and leverages vimango's existing sync 
 ### Code Structure
 
 - **server.py**: MCP server implementation using the `mcp` library
-  - Defines three tools: `create_note`, `list_contexts`, `list_folders`
+  - Tools: `create_note`, `list_contexts`, `list_folders`, `find_note`, `get_note`
   - Global `db` instance initialized in `async_main()` from `config.json`
   - Entry point `main()` is a synchronous wrapper that calls `asyncio.run(async_main())`
   - Uses stdio transport for communication with Claude Desktop
 
 - **db.py**: Database operations and SQLite interaction
-  - `VimangoDatabase` class manages connection to main database
+  - `VimangoDatabase` opens the main database read-write and the FTS database read-only
   - `insert_note()` creates new task entries with `tid` left NULL
-  - Name-to-TID resolution for contexts and folders
+  - `find_notes()` runs FTS queries and joins back to task/context/folder tables
+  - `get_note_by_tid()` returns the full note body and metadata for a given `tid`
   - `load_config()` reads database paths from `config.json`
 
 ### Configuration
@@ -76,7 +77,7 @@ The server requires a `config.json` file at project root:
 }
 ```
 
-While `fts_db` is specified, it's currently unused by the server (reserved for future features).
+While `fts_db` is specified, it's used in read-only mode to power the `find_note` search tool.
 
 **Important**: The server uses `Path(__file__).parent.parent.parent / "config.json"` to locate the config file, making it work regardless of the current working directory when launched by Claude Desktop.
 
@@ -122,3 +123,11 @@ The project uses pytest with asyncio support. When writing tests:
 - Mock database connections to avoid requiring actual vimango databases
 - Test MCP tool schemas and responses
 - Verify database operations in isolation
+
+### Tool Summary
+
+- `create_note`: Insert a new note into `task`, leaving `tid` NULL for sync.
+- `list_contexts`: Enumerate undeleted contexts with their TIDs and star flags.
+- `list_folders`: Enumerate undeleted folders with their TIDs and star flags.
+- `find_note`: Run an FTS search (minimum 3 characters) and return ranked results with `id`, `tid`, `title`, context, and folder.
+- `get_note`: Retrieve the full markdown body for the chosen `tid`, plus its metadata, without modifying either database.

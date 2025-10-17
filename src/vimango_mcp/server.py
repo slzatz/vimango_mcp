@@ -70,6 +70,40 @@ async def list_tools() -> list[Tool]:
                 "type": "object",
                 "properties": {}
             }
+        ),
+        Tool(
+            name="find_note",
+            description="Search notes using full-text search and return matching titles",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Full-text search query (minimum 3 characters)"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of results to return",
+                        "default": 5,
+                        "minimum": 1
+                    }
+                },
+                "required": ["query"]
+            }
+        ),
+        Tool(
+            name="get_note",
+            description="Retrieve the full note content for a given tid",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "tid": {
+                        "type": "integer",
+                        "description": "Task tid returned by find_note"
+                    }
+                },
+                "required": ["tid"]
+            }
         )
     ]
 
@@ -134,6 +168,73 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
             star_marker = " ⭐" if star else ""
             result += f"- {title}{star_marker} (tid: {tid})\n"
         return [TextContent(type="text", text=result)]
+
+    elif name == "find_note":
+        query = arguments["query"]
+        limit = arguments.get("limit", 5)
+        try:
+            limit_value = int(limit)
+        except (TypeError, ValueError):
+            return [TextContent(
+                type="text",
+                text="Error: 'limit' must be an integer."
+            )]
+
+        try:
+            matches = db.find_notes(query, limit_value)
+        except ValueError as exc:
+            return [TextContent(type="text", text=f"Error: {exc}")]
+        except Exception as exc:
+            return [TextContent(
+                type="text",
+                text=f"Error running find_note: {exc}"
+            )]
+
+        if not matches:
+            return [TextContent(
+                type="text",
+                text=f"No notes matched '{query}'."
+            )]
+
+        lines = [f"Matches for '{query}':"]
+        for match in matches:
+            context_title = match.get("context_title") or "none"
+            folder_title = match.get("folder_title") or "none"
+            lines.append(
+                f"{match['rank']}. {match['title']} "
+                f"(context: {context_title}, folder: {folder_title}, "
+                f"id: {match['id']}, tid: {match['tid']})"
+            )
+        return [TextContent(type="text", text="\n".join(lines))]
+
+    elif name == "get_note":
+        try:
+            tid = int(arguments["tid"])
+        except (KeyError, TypeError, ValueError):
+            return [TextContent(
+                type="text",
+                text="Error: 'tid' must be provided as an integer."
+            )]
+
+        note_record = db.get_note_by_tid(tid)
+        if not note_record:
+            return [TextContent(
+                type="text",
+                text=f"No active note found with tid {tid}."
+            )]
+
+        context_title = note_record.get("context_title") or "none"
+        folder_title = note_record.get("folder_title") or "none"
+        header = (
+            f"Title: {note_record['title']}\n"
+            f"Context: {context_title}\n"
+            f"Folder: {folder_title}\n"
+            f"tid: {note_record['tid']}\n"
+            f"id: {note_record['id']}\n"
+        )
+        body = note_record.get("note", "")
+        text = f"{header}\n{body}" if body else header
+        return [TextContent(type="text", text=text)]
 
     else:
         return [TextContent(
