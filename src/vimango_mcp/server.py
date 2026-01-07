@@ -72,7 +72,7 @@ async def list_tools() -> list[Tool]:
             }
         ),
         Tool(
-            name="find_note",
+            name="search_notes",
             description="Search notes using full-text search and return matching titles",
             inputSchema={
                 "type": "object",
@@ -93,16 +93,49 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="get_note",
-            description="Retrieve the full note content for a given tid",
+            description="Retrieve the full note content by note_id or note_tid. Use note_id for unsynced notes, note_tid for synced notes.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "tid": {
+                    "note_id": {
                         "type": "integer",
-                        "description": "Task tid returned by find_note"
+                        "description": "Local database ID (always present)"
+                    },
+                    "note_tid": {
+                        "type": "integer",
+                        "description": "Sync ID (only present after sync to server)"
+                    }
+                }
+            }
+        ),
+        Tool(
+            name="update_note",
+            description="Update metadata on an existing note (context, folder, title, star). At least one field must be provided.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "note_id": {
+                        "type": "integer",
+                        "description": "Local database ID of the note to update"
+                    },
+                    "context": {
+                        "type": "string",
+                        "description": "New context name (optional)"
+                    },
+                    "folder": {
+                        "type": "string",
+                        "description": "New folder name (optional)"
+                    },
+                    "title": {
+                        "type": "string",
+                        "description": "New title (optional)"
+                    },
+                    "star": {
+                        "type": "boolean",
+                        "description": "Star/favorite the note (optional)"
                     }
                 },
-                "required": ["tid"]
+                "required": ["note_id"]
             }
         )
     ]
@@ -119,16 +152,16 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
         folder_name = arguments.get("folder", "none")
         star = arguments.get("star", False)
 
-        # Resolve context and folder names to TIDs
-        context_tid = db.get_context_tid_by_name(context_name)
-        if context_tid is None:
+        # Resolve context and folder names to UUIDs
+        context_uuid = db.get_context_uuid_by_name(context_name)
+        if context_uuid is None:
             return [TextContent(
                 type="text",
                 text=f"Error: Context '{context_name}' not found. Use list_contexts to see available contexts."
             )]
 
-        folder_tid = db.get_folder_tid_by_name(folder_name)
-        if folder_tid is None:
+        folder_uuid = db.get_folder_uuid_by_name(folder_name)
+        if folder_uuid is None:
             return [TextContent(
                 type="text",
                 text=f"Error: Folder '{folder_name}' not found. Use list_folders to see available folders."
@@ -139,8 +172,8 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
             task_id = db.insert_note(
                 title=title,
                 note=note,
-                context_tid=context_tid,
-                folder_tid=folder_tid,
+                context_uuid=context_uuid,
+                folder_uuid=folder_uuid,
                 star=star
             )
             return [TextContent(
@@ -156,20 +189,20 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
     elif name == "list_contexts":
         contexts = db.list_contexts()
         result = "Available contexts:\n"
-        for id, tid, title, star in contexts:
+        for id, tid, title, uuid, star in contexts:
             star_marker = " ⭐" if star else ""
-            result += f"- {title}{star_marker} (tid: {tid})\n"
+            result += f"- {title}{star_marker} (uuid: {uuid})\n"
         return [TextContent(type="text", text=result)]
 
     elif name == "list_folders":
         folders = db.list_folders()
         result = "Available folders:\n"
-        for id, tid, title, star in folders:
+        for id, tid, title, uuid, star in folders:
             star_marker = " ⭐" if star else ""
-            result += f"- {title}{star_marker} (tid: {tid})\n"
+            result += f"- {title}{star_marker} (uuid: {uuid})\n"
         return [TextContent(type="text", text=result)]
 
-    elif name == "find_note":
+    elif name == "search_notes":
         query = arguments["query"]
         limit = arguments.get("limit", 5)
         try:
@@ -208,33 +241,134 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
         return [TextContent(type="text", text="\n".join(lines))]
 
     elif name == "get_note":
-        try:
-            tid = int(arguments["tid"])
-        except (KeyError, TypeError, ValueError):
+        note_id = arguments.get("note_id")
+        note_tid = arguments.get("note_tid")
+
+        if note_id is None and note_tid is None:
             return [TextContent(
                 type="text",
-                text="Error: 'tid' must be provided as an integer."
+                text="Error: Either 'note_id' or 'note_tid' must be provided."
             )]
 
-        note_record = db.get_note_by_tid(tid)
+        # Prefer note_id if both provided (it's always present)
+        if note_id is not None:
+            try:
+                note_id = int(note_id)
+            except (TypeError, ValueError):
+                return [TextContent(
+                    type="text",
+                    text="Error: 'note_id' must be an integer."
+                )]
+            note_record = db.get_note_by_id(note_id)
+            lookup_desc = f"id {note_id}"
+        else:
+            try:
+                note_tid = int(note_tid)
+            except (TypeError, ValueError):
+                return [TextContent(
+                    type="text",
+                    text="Error: 'note_tid' must be an integer."
+                )]
+            note_record = db.get_note_by_tid(note_tid)
+            lookup_desc = f"tid {note_tid}"
+
         if not note_record:
             return [TextContent(
                 type="text",
-                text=f"No active note found with tid {tid}."
+                text=f"No active note found with {lookup_desc}."
             )]
 
         context_title = note_record.get("context_title") or "none"
         folder_title = note_record.get("folder_title") or "none"
+        tid_display = note_record['tid'] if note_record['tid'] is not None else "(unsynced)"
         header = (
             f"Title: {note_record['title']}\n"
             f"Context: {context_title}\n"
             f"Folder: {folder_title}\n"
-            f"tid: {note_record['tid']}\n"
+            f"tid: {tid_display}\n"
             f"id: {note_record['id']}\n"
         )
         body = note_record.get("note", "")
         text = f"{header}\n{body}" if body else header
         return [TextContent(type="text", text=text)]
+
+    elif name == "update_note":
+        # Validate note_id
+        try:
+            note_id = int(arguments["note_id"])
+        except (KeyError, TypeError, ValueError):
+            return [TextContent(
+                type="text",
+                text="Error: 'note_id' must be provided as an integer."
+            )]
+
+        # Get optional update fields
+        context_name = arguments.get("context")
+        folder_name = arguments.get("folder")
+        title = arguments.get("title")
+        star = arguments.get("star")
+
+        # Check at least one field is provided
+        if context_name is None and folder_name is None and title is None and star is None:
+            return [TextContent(
+                type="text",
+                text="Error: At least one field (context, folder, title, star) must be provided."
+            )]
+
+        # Resolve context name to UUID if provided
+        context_uuid = None
+        if context_name is not None:
+            context_uuid = db.get_context_uuid_by_name(context_name)
+            if context_uuid is None:
+                return [TextContent(
+                    type="text",
+                    text=f"Error: Context '{context_name}' not found. Use list_contexts to see available contexts."
+                )]
+
+        # Resolve folder name to UUID if provided
+        folder_uuid = None
+        if folder_name is not None:
+            folder_uuid = db.get_folder_uuid_by_name(folder_name)
+            if folder_uuid is None:
+                return [TextContent(
+                    type="text",
+                    text=f"Error: Folder '{folder_name}' not found. Use list_folders to see available folders."
+                )]
+
+        # Perform the update
+        try:
+            updated = db.update_note_metadata(
+                note_id=note_id,
+                context_uuid=context_uuid,
+                folder_uuid=folder_uuid,
+                title=title,
+                star=star
+            )
+            if updated:
+                # Build description of what was updated
+                changes = []
+                if context_name is not None:
+                    changes.append(f"context='{context_name}'")
+                if folder_name is not None:
+                    changes.append(f"folder='{folder_name}'")
+                if title is not None:
+                    changes.append(f"title='{title}'")
+                if star is not None:
+                    changes.append(f"star={star}")
+                return [TextContent(
+                    type="text",
+                    text=f"Successfully updated note {note_id}: {', '.join(changes)}"
+                )]
+            else:
+                return [TextContent(
+                    type="text",
+                    text=f"No note found with id {note_id}, or no changes were made."
+                )]
+        except Exception as e:
+            return [TextContent(
+                type="text",
+                text=f"Error updating note: {str(e)}"
+            )]
 
     else:
         return [TextContent(

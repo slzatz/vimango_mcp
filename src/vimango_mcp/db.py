@@ -5,6 +5,10 @@ from pathlib import Path
 from typing import Any, Optional, Tuple
 import json
 
+# Default UUIDs for "none" containers (matches vimango init.go)
+DEFAULT_CONTEXT_UUID = "00000000-0000-0000-0000-000000000001"
+DEFAULT_FOLDER_UUID = "00000000-0000-0000-0000-000000000002"
+
 
 class VimangoDatabase:
     """Handle operations on vimango SQLite databases."""
@@ -48,8 +52,8 @@ class VimangoDatabase:
         self,
         title: str,
         note: str,
-        context_tid: int = 1,  # Default: "none"
-        folder_tid: int = 1,   # Default: "none"
+        context_uuid: str = DEFAULT_CONTEXT_UUID,
+        folder_uuid: str = DEFAULT_FOLDER_UUID,
         star: bool = False
     ) -> int:
         """
@@ -58,8 +62,8 @@ class VimangoDatabase:
         Args:
             title: Note title
             note: Note body (markdown)
-            context_tid: Context TID (default 1 = "none")
-            folder_tid: Folder TID (default 1 = "none")
+            context_uuid: Context UUID (default = "none" context)
+            folder_uuid: Folder UUID (default = "none" folder)
             star: Star/favorite flag
 
         Returns:
@@ -71,9 +75,9 @@ class VimangoDatabase:
         """
         try:
             cursor = self.main_db.execute(
-                """INSERT INTO task (title, note, folder_tid, context_tid, star, added, modified)
+                """INSERT INTO task (title, note, folder_uuid, context_uuid, star, added, modified)
                    VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))""",
-                (title, note, folder_tid, context_tid, star)
+                (title, note, folder_uuid, context_uuid, star)
             )
             task_id = cursor.lastrowid
             self.main_db.commit()
@@ -83,59 +87,59 @@ class VimangoDatabase:
             self.main_db.rollback()
             raise
 
-    def list_contexts(self) -> list[Tuple[int, int, str, bool]]:
+    def list_contexts(self) -> list[Tuple[int, int, str, str, bool]]:
         """
         List all available contexts.
 
         Returns:
-            List of tuples: (id, tid, title, star)
+            List of tuples: (id, tid, title, uuid, star)
         """
         cursor = self.main_db.execute(
-            "SELECT id, tid, title, star FROM context WHERE deleted=0 ORDER BY title COLLATE NOCASE"
+            "SELECT id, tid, title, uuid, star FROM context WHERE deleted=0 ORDER BY title COLLATE NOCASE"
         )
         return cursor.fetchall()
 
-    def list_folders(self) -> list[Tuple[int, int, str, bool]]:
+    def list_folders(self) -> list[Tuple[int, int, str, str, bool]]:
         """
         List all available folders.
 
         Returns:
-            List of tuples: (id, tid, title, star)
+            List of tuples: (id, tid, title, uuid, star)
         """
         cursor = self.main_db.execute(
-            "SELECT id, tid, title, star FROM folder WHERE deleted=0 ORDER BY title COLLATE NOCASE"
+            "SELECT id, tid, title, uuid, star FROM folder WHERE deleted=0 ORDER BY title COLLATE NOCASE"
         )
         return cursor.fetchall()
 
-    def get_context_tid_by_name(self, name: str) -> Optional[int]:
+    def get_context_uuid_by_name(self, name: str) -> Optional[str]:
         """
-        Get context TID by name.
+        Get context UUID by name.
 
         Args:
             name: Context name
 
         Returns:
-            Context TID or None if not found
+            Context UUID or None if not found
         """
         cursor = self.main_db.execute(
-            "SELECT tid FROM context WHERE title=? AND deleted=0",
+            "SELECT uuid FROM context WHERE title=? AND deleted=0",
             (name,)
         )
         result = cursor.fetchone()
         return result[0] if result else None
 
-    def get_folder_tid_by_name(self, name: str) -> Optional[int]:
+    def get_folder_uuid_by_name(self, name: str) -> Optional[str]:
         """
-        Get folder TID by name.
+        Get folder UUID by name.
 
         Args:
             name: Folder name
 
         Returns:
-            Folder TID or None if not found
+            Folder UUID or None if not found
         """
         cursor = self.main_db.execute(
-            "SELECT tid FROM folder WHERE title=? AND deleted=0",
+            "SELECT uuid FROM folder WHERE title=? AND deleted=0",
             (name,)
         )
         result = cursor.fetchone()
@@ -190,8 +194,8 @@ class VimangoDatabase:
             "COALESCE(folder.title, 'none') AS folder_title "
             "FROM matches "
             "JOIN task ON task.tid = matches.tid "
-            "LEFT JOIN context ON context.tid = task.context_tid "
-            "LEFT JOIN folder ON folder.tid = task.folder_tid "
+            "LEFT JOIN context ON context.uuid = task.context_uuid "
+            "LEFT JOIN folder ON folder.uuid = task.folder_uuid "
             "WHERE task.deleted = 0 AND task.archived = 0 "
             "ORDER BY matches.rank"
         )
@@ -231,8 +235,8 @@ class VimangoDatabase:
                    COALESCE(context.title, 'none') AS context_title,
                    COALESCE(folder.title, 'none') AS folder_title
             FROM task
-            LEFT JOIN context ON context.tid = task.context_tid
-            LEFT JOIN folder ON folder.tid = task.folder_tid
+            LEFT JOIN context ON context.uuid = task.context_uuid
+            LEFT JOIN folder ON folder.uuid = task.folder_uuid
             WHERE task.tid = ? AND task.deleted = 0 AND task.archived = 0
             """,
             (tid,),
@@ -252,6 +256,97 @@ class VimangoDatabase:
             "context_title": context_title,
             "folder_title": folder_title,
         }
+
+
+    def get_note_by_id(self, note_id: int) -> Optional[dict[str, Any]]:
+        """
+        Retrieve the full note content and metadata for a given local ID.
+
+        Args:
+            note_id: Local database ID
+
+        Returns:
+            Dictionary with id, tid, title, note, context_title, folder_title, or None if not found.
+        """
+        cursor = self.main_db.execute(
+            """
+            SELECT task.id, task.tid, task.title, task.note,
+                   COALESCE(context.title, 'none') AS context_title,
+                   COALESCE(folder.title, 'none') AS folder_title
+            FROM task
+            LEFT JOIN context ON context.uuid = task.context_uuid
+            LEFT JOIN folder ON folder.uuid = task.folder_uuid
+            WHERE task.id = ? AND task.deleted = 0 AND task.archived = 0
+            """,
+            (note_id,),
+        )
+        row = cursor.fetchone()
+        cursor.close()
+
+        if not row:
+            return None
+
+        task_id, task_tid, title, note, context_title, folder_title = row
+        return {
+            "id": task_id,
+            "tid": task_tid,
+            "title": title,
+            "note": note or "",
+            "context_title": context_title,
+            "folder_title": folder_title,
+        }
+
+    def update_note_metadata(
+        self,
+        note_id: int,
+        context_uuid: Optional[str] = None,
+        folder_uuid: Optional[str] = None,
+        title: Optional[str] = None,
+        star: Optional[bool] = None
+    ) -> bool:
+        """
+        Update metadata fields on an existing note.
+
+        Args:
+            note_id: Local database ID of the note
+            context_uuid: New context UUID (optional)
+            folder_uuid: New folder UUID (optional)
+            title: New title (optional)
+            star: New star/favorite value (optional)
+
+        Returns:
+            True if a row was updated, False otherwise
+        """
+        updates = []
+        params = []
+
+        if context_uuid is not None:
+            updates.append("context_uuid = ?")
+            params.append(context_uuid)
+        if folder_uuid is not None:
+            updates.append("folder_uuid = ?")
+            params.append(folder_uuid)
+        if title is not None:
+            updates.append("title = ?")
+            params.append(title)
+        if star is not None:
+            updates.append("star = ?")
+            params.append(star)
+
+        if not updates:
+            return False
+
+        updates.append("modified = datetime('now')")
+        params.append(note_id)
+
+        sql = f"UPDATE task SET {', '.join(updates)} WHERE id = ? AND deleted = 0"
+        try:
+            cursor = self.main_db.execute(sql, params)
+            self.main_db.commit()
+            return cursor.rowcount > 0
+        except sqlite3.DatabaseError:
+            self.main_db.rollback()
+            raise
 
 
 def load_config(config_path: str = "config.json") -> dict:
